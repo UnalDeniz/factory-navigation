@@ -24,8 +24,8 @@
 
 3. Clone the repository and go to the project root directory
    #+BEGIN_SRC sh
-     git clone https://github.com/UnalDeniz/factory-navigation
-     cd factory-navigation
+   git clone https://github.com/UnalDeniz/factory-navigation cd
+   factory-navigation
    #+END_SRC
 
 4. Run the code by using make command:
