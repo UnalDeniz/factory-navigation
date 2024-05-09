@@ -8,6 +8,7 @@ import cmpe434_utils
 import cmpe434_dungeon
 
 import numpy as np
+import scipy as sp
 
 from controller import DynamicWindowApproach
 from AStar.a_star import AStarPlanner
@@ -95,7 +96,9 @@ def create_scenario():
     # Add the robot to the scene.
     robot, robot_assets = cmpe434_utils.get_model("models/mushr_car/model.xml")
     start_pos = random.choice([key for key in tiles.keys() if tiles[key] == "."])
-    final_pos = random.choice([key for key in tiles.keys() if tiles[key] == "."])
+    final_pos = random.choice(
+        [key for key in tiles.keys() if tiles[key] == "." and key != start_pos]
+    )
 
     scene.worldbody.add(
         "site",
@@ -113,6 +116,18 @@ def create_scenario():
         rgba=[1, 0, 0, 1],
         pos=[final_pos[0] * 2, final_pos[1] * 2, 0],
     )
+    for i, room in enumerate(rooms):
+        obs_pos = random.choice(
+            [tile for tile in room if tile != start_pos and tile != final_pos]
+        )
+        scene.worldbody.add(
+            "geom",
+            name="Z{}".format(i),
+            type="cylinder",
+            size=[0.2, 0.05],
+            rgba=[0.8, 0.0, 0.1, 1],
+            pos=[obs_pos[0] * 2, obs_pos[1] * 2, 0.08],
+        )
 
     start_yaw = random.randint(0, 359)
     robot.find("body", "buddy").set_attributes(
@@ -137,8 +152,15 @@ def execute_scenario(scene, ASSETS=dict()):
     m = mujoco.MjModel.from_xml_string(scene.to_xml_string(), assets=all_assets)
     d = mujoco.MjData(m)
 
+    rooms = [m.geom(i).id for i in range(m.ngeom) if m.geom(i).name.startswith("R")]
+    obstacles = [m.geom(i).id for i in range(m.ngeom) if m.geom(i).name.startswith("Z")]
+
+    uniform_direction_dist = sp.stats.uniform_direction(2)
+    obstacle_direction = [[x, y, 0] for x,y in uniform_direction_dist.rvs(len(obstacles))]
+    unused = np.zeros(1, dtype=np.int32)
+
     with mujoco.viewer.launch_passive(m, d, key_callback=key_callback) as viewer:
-        
+
         velocity = d.actuator("throttle_velocity")
         steering = d.actuator("steering")
 
@@ -146,7 +168,7 @@ def execute_scenario(scene, ASSETS=dict()):
         start = time.time()
         dynamic_window = DynamicWindowApproach(3.0, 10.0, 0.16, 0.12, 64, 0.1, 1)
 
-        obstacles = np.array([])
+        static_obs = np.array([])
 
         geom_id = 0
 
@@ -155,10 +177,10 @@ def execute_scenario(scene, ASSETS=dict()):
             obstacle = np.append(obstacle, max(m.geom(i).size[:2]))
             if obstacle[2] != 1:
                 continue
-            obstacles = np.vstack((obstacles, obstacle)) if obstacles.size else obstacle
+            static_obs = np.vstack((static_obs, obstacle)) if static_obs.size else obstacle
 
         astar = AStarPlanner(
-            [p[0] for p in obstacles], [p[1] for p in obstacles], 0.5, 1.0
+            [p[0] for p in static_obs], [p[1] for p in static_obs], 0.5, 1.0
         )
         path_x, path_y = astar.planning(start_coor[0], start_coor[1], goal[0], goal[1])
         path = np.vstack((path_x, path_y)).T
@@ -188,10 +210,28 @@ def execute_scenario(scene, ASSETS=dict()):
 
             if not paused:
 
+                # obstable update
+                for i, x in enumerate(obstacles):
+                    dx = obstacle_direction[i][0]
+                    dy = obstacle_direction[i][1]
+
+                    px = m.geom_pos[x][0]
+                    py = m.geom_pos[x][1]
+                    pz = 0.02
+
+                    nearest_dist = mujoco.mj_ray(m, d, [px, py, pz], obstacle_direction[i], None, 1, -1, unused)
+
+                    if nearest_dist >= 0 and nearest_dist < 0.4:
+                        obstacle_direction[i][0] = -dy
+                        obstacle_direction[i][1] = dx
+                         
+                    m.geom_pos[x][0] = m.geom_pos[x][0]+dx*0.001
+                    m.geom_pos[x][1] = m.geom_pos[x][1]+dy*0.001
+                    
                 if counter % 10 == 0:
                     car_pos = np.array(d.xpos[1].copy()[0:2])
                     close_obstacles = filter_coordinates(
-                        obstacles, 3, np.append(car_pos, 1)
+                        static_obs, 3, np.append(car_pos, 1)
                     )
 
                     car_state = np.append(car_pos, quaternion_to_euler(d.xquat[1])[2])
