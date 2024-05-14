@@ -13,6 +13,8 @@ import scipy as sp
 from controller import DynamicWindowApproach
 from AStar.a_star import AStarPlanner
 
+import visualizer
+
 final_pos = None
 start_pos = None
 
@@ -46,9 +48,10 @@ def filter_coordinates(coordinates, threshold, reference_point):
     # Convert the coordinates and the reference point to NumPy arrays
     # Calculate the distances between each coordinate and the reference point using vectorized operations
     distances = np.linalg.norm(coordinates - reference_point, axis=1)
+    # print("Distances:", distances)
 
     # Use boolean indexing to filter the coordinates based on the threshold distance
-    filtered_coordinates = coordinates[distances < threshold]
+    filtered_coordinates = distances < threshold
 
     return filtered_coordinates
 
@@ -152,12 +155,18 @@ def execute_scenario(scene, ASSETS=dict()):
     m = mujoco.MjModel.from_xml_string(scene.to_xml_string(), assets=all_assets)
     d = mujoco.MjData(m)
 
+    m.opt.timestep = 0.002
+
     rooms = [m.geom(i).id for i in range(m.ngeom) if m.geom(i).name.startswith("R")]
     obstacles = [m.geom(i).id for i in range(m.ngeom) if m.geom(i).name.startswith("Z")]
 
     uniform_direction_dist = sp.stats.uniform_direction(2)
-    obstacle_direction = [[x, y, 0] for x,y in uniform_direction_dist.rvs(len(obstacles))]
+    obstacle_direction = [
+        [x, y, 0] for x, y in uniform_direction_dist.rvs(len(obstacles))
+    ]
     unused = np.zeros(1, dtype=np.int32)
+
+    update_freq = 10
 
     with mujoco.viewer.launch_passive(m, d, key_callback=key_callback) as viewer:
 
@@ -166,7 +175,9 @@ def execute_scenario(scene, ASSETS=dict()):
 
         # Close the viewer automatically after 30 wall-seconds.
         start = time.time()
-        dynamic_window = DynamicWindowApproach(3.0, 10.0, 0.16, 0.12, 64, 0.1, 1)
+        dynamic_window = DynamicWindowApproach(
+            3.0, 10.0, 0.16, 0.12, 64, 0.1, 1, update_freq * m.opt.timestep
+        )
 
         static_obs = np.array([])
 
@@ -175,35 +186,31 @@ def execute_scenario(scene, ASSETS=dict()):
         for i in range(1, m.ngeom):
             obstacle = np.array(m.geom(i).pos[:2])
             obstacle = np.append(obstacle, max(m.geom(i).size[:2]))
+            obstacle = np.append(obstacle, 0)
+            obstacle = np.append(obstacle, i)
             if obstacle[2] != 1:
                 continue
-            static_obs = np.vstack((static_obs, obstacle)) if static_obs.size else obstacle
+            static_obs = (
+                np.vstack((static_obs, obstacle)) if static_obs.size else obstacle
+            )
 
         astar = AStarPlanner(
-            [p[0] for p in static_obs], [p[1] for p in static_obs], 0.5, 1.0
+            [p[0] for p in static_obs], [p[1] for p in static_obs], 0.5, 2**0.5
         )
         path_x, path_y = astar.planning(start_coor[0], start_coor[1], goal[0], goal[1])
         path = np.vstack((path_x, path_y)).T
         # reverse the path
         path = path[::-1]
+        geom_id = visualizer.visualize_path(
+            path, viewer, geom_id, color=[1, 0, 0, 1], height=0.05
+        )
+
         indices = np.arange(4, path.shape[0], 5)
         path = path[indices]
         path = np.vstack((path, goal))
         index = 0
 
         counter = 0
-
-        mujoco.mjv_initGeom(
-            viewer.user_scn.geoms[geom_id],
-            type=mujoco.mjtGeom.mjGEOM_LINEBOX,
-            size=np.array([0.01, 0.01, 1]),
-            pos=np.append(path[index], 0.01),
-            mat=[1, 0, 0, 0, 1, 0, 0, 0, 1],
-            rgba=np.array([1, 1, 0, 1]),
-        )
-        geom_id += 1
-        viewer.user_scn.ngeom = geom_id + 1
-        viewer.sync()
 
         while viewer.is_running() and time.time() - start < 300:
             step_start = time.time()
@@ -219,46 +226,48 @@ def execute_scenario(scene, ASSETS=dict()):
                     py = m.geom_pos[x][1]
                     pz = 0.02
 
-                    nearest_dist = mujoco.mj_ray(m, d, [px, py, pz], obstacle_direction[i], None, 1, -1, unused)
+                    nearest_dist = mujoco.mj_ray(
+                        m, d, [px, py, pz], obstacle_direction[i], None, 1, -1, unused
+                    )
 
                     if nearest_dist >= 0 and nearest_dist < 0.4:
                         obstacle_direction[i][0] = -dy
                         obstacle_direction[i][1] = dx
-                         
-                    m.geom_pos[x][0] = m.geom_pos[x][0]+dx*0.001
-                    m.geom_pos[x][1] = m.geom_pos[x][1]+dy*0.001
-                    
-                if counter % 10 == 0:
+
+                    m.geom_pos[x][0] = m.geom_pos[x][0] + dx * 0.001
+                    m.geom_pos[x][1] = m.geom_pos[x][1] + dy * 0.001
+
+                if counter % update_freq == 0:
+
                     car_pos = np.array(d.xpos[1].copy()[0:2])
-                    close_obstacles = filter_coordinates(
-                        static_obs, 3, np.append(car_pos, 1)
-                    )
+                    close_static_obs = static_obs[
+                        filter_coordinates(static_obs[:, :2], 3, car_pos)
+                    ]
+
+                    dynamic_obstacles = [
+                        [m.geom_pos[x][0], m.geom_pos[x][1], m.geom_size[x][0], 1, x]
+                        for x in obstacles
+                    ]
+                    dynamic_obstacles = np.array(dynamic_obstacles)
+
+                    close_dynamic_obs = dynamic_obstacles[
+                        filter_coordinates(dynamic_obstacles[:, :2], 3, car_pos)
+                    ]
+                    close_obs = np.vstack((close_static_obs, close_dynamic_obs))
 
                     car_state = np.append(car_pos, quaternion_to_euler(d.xquat[1])[2])
                     control = dynamic_window.get_controls(
-                        path[index], car_state, close_obstacles
+                        path[index], car_state, close_obs
                     )
 
                     v = control[0]
                     s = control[1]
 
+                    traj = dynamic_window.create_trajectory(car_state, v, s)
+                    traj = [[traj[i][0], traj[i][1]] for i in range(1,10)]
+                    traj = np.array(traj)
+                    visualizer.visualize_path(traj, viewer, geom_id, color=[0, 0, 1, 1], height=0.05)
                     old_geom_id = geom_id
-
-                    # for point in traj:
-                    #     print("Trajectory point:", point)
-                    #     mujoco.mjv_initGeom(
-                    #         viewer.user_scn.geoms[geom_id],
-                    #         type=mujoco.mjtGeom.mjGEOM_LINEBOX,
-                    #         size=np.array([0.15, 0.125, 1]),
-                    #         pos=np.append(point[:2], 0.01),
-                    #         # pos=np.array([xy[0], xy[1], 0.01]),
-                    #         # mat=euler_angles_to_rotation_matrix(euler[2], 90, 0).flatten(),
-                    #         mat=[1, 0, 0, 0, 1, 0, 0, 0, 1],
-                    #         rgba=np.array([0, 1, 1, 1]),
-                    #     )
-                    #     geom_id += 1
-                    #     viewer.user_scn.ngeom = geom_id + 1
-                    #     viewer.sync()
 
                     velocity.ctrl = v
                     steering.ctrl = s
@@ -274,32 +283,11 @@ def execute_scenario(scene, ASSETS=dict()):
                     and np.linalg.norm(car_pos - path[index]) < 1.5
                 ):
                     index += 1
-                    mujoco.mjv_initGeom(
-                        viewer.user_scn.geoms[geom_id],
-                        type=mujoco.mjtGeom.mjGEOM_LINEBOX,
-                        size=np.array([0.01, 0.01, 1]),
-                        pos=np.append(path[index], 0.01),
-                        mat=[1, 0, 0, 0, 1, 0, 0, 0, 1],
-                        rgba=np.array([1, 1, 0, 1]),
-                    )
-                    geom_id += 1
-                    viewer.user_scn.ngeom = geom_id + 1
 
                 if index != len(path) - 1 and np.linalg.norm(
                     car_pos - path[index]
                 ) > np.linalg.norm(car_pos - path[index + 1]):
                     index += 1
-
-                    mujoco.mjv_initGeom(
-                        viewer.user_scn.geoms[geom_id],
-                        type=mujoco.mjtGeom.mjGEOM_LINEBOX,
-                        size=np.array([0.01, 0.01, 1]),
-                        pos=np.append(path[index], 0.01),
-                        mat=[1, 0, 0, 0, 1, 0, 0, 0, 1],
-                        rgba=np.array([1, 1, 0, 1]),
-                    )
-                    geom_id += 1
-                    viewer.user_scn.ngeom = geom_id + 1
 
                 # Pick up changes to the physics state, apply perturbations, update options from GUI.
                 viewer.sync()

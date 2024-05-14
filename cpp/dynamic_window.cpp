@@ -2,7 +2,12 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <map>
 #include <vector>
+enum shapes {
+  RECTANGLE = 0,
+  CIRCLE = 1,
+};
 
 double distance(double x1, double y1, double x2, double y2) {
   return sqrt(pow(x1 - x2, 2) + pow(y1 - y2, 2));
@@ -25,8 +30,9 @@ class DynamicWindowApproach {
 public:
   DynamicWindowApproach(double max_speed, double max_steering,
                         double car_length, double car_width, int num_samples,
-                        double dt, double duration, double kspeed = 1,
-                        double kdistance = 1, double kstability = 0.5) {
+                        double dt, double duration, double run_freq,
+                        double kspeed = 1, double kdistance = 1,
+                        double kstability = 0.2, double kdirection = 0.7) {
     this->max_speed = max_speed;
     this->max_steering = max_steering;
     this->car_length = car_length;
@@ -35,13 +41,27 @@ public:
     this->dt = dt;
     this->duration = duration;
     this->num_trajectory_points = (int)(duration / dt);
+    this->run_freq = run_freq;
     this->kspeed = kspeed;
     this->kdistance = kdistance;
     this->kstability = kstability;
+    this->kdirection = kdirection;
   }
 
   double *get_controls(double goal[2], double state[3], double *obstacles,
                        int obstacles_size) {
+
+    double obs_speeds[obstacles_size * 2];
+    std::fill_n(obs_speeds, obstacles_size * 2, 0);
+    for (int i = 0; i < obstacles_size; i++) {
+      if (obstacles[i * 5 + 3] && // obstacle is moving
+          obs_history.find((int)obstacles[i * 5 + 4]) != obs_history.end()) {
+        double obs_prev[2] = {obs_history[(int)obstacles[i * 5 + 4]][0],
+                              obs_history[(int)obstacles[i * 5 + 4]][1]};
+        obs_speeds[i * 2] = (obstacles[i * 5] - obs_prev[0]) / run_freq;
+        obs_speeds[i * 2 + 1] = (obstacles[i * 5 + 1] - obs_prev[1]) / run_freq;
+      }
+    }
 
     double *best_controls = new double[2];
     best_controls[0] = 0;
@@ -49,17 +69,22 @@ public:
     double best_score = -INFINITY;
     double **motion_primitives = generate_motion_primitives();
     for (int i = 0; i < num_samples; i++) {
-      double v = motion_primitives[i][0] * max_speed;
+      double v = (motion_primitives[i][0] - 0.5) * max_speed * 2;
       double s = (motion_primitives[i][1] - 0.5) * max_steering * 2;
 
-      double score =
-          evaluate_score(v, s, goal, state, obstacles, obstacles_size);
+      double score = evaluate_score(v, s, goal, state, obstacles, obs_speeds,
+                                    obstacles_size);
 
       if (score > best_score) {
         best_score = score;
         best_controls[0] = v;
         best_controls[1] = s;
       }
+    }
+    // keep obstacle history
+    for (int i = 0; i < obstacles_size; i++) {
+      obs_history[(int)obstacles[i * 5 + 4]][0] = obstacles[i * 5];
+      obs_history[(int)obstacles[i * 5 + 4]][1] = obstacles[i * 5 + 1];
     }
     // clear motion primitives
     for (int i = 0; i < num_samples; i++) {
@@ -69,36 +94,6 @@ public:
     prev_v = best_controls[0];
     prev_s = best_controls[1];
     return best_controls;
-  }
-
-private:
-  double max_speed;
-  double max_steering;
-  double car_length;
-  double car_width;
-  int num_samples;
-  double dt;
-  double duration;
-  int num_trajectory_points;
-  double kspeed = 1;
-  double kdistance = 1;
-  double kstability = 0.1;
-  double prev_v = 0;
-  double prev_s = 0;
-  int seed = 0;
-
-  double **generate_motion_primitives() {
-    double **motion_primitives = new double *[num_samples];
-    for (int i = 0; i < num_samples; i++) {
-      float *motion_primitive = new float[2];
-      i4_sobol(2, &seed, motion_primitive);
-      double *motion_primitive_double = new double[2];
-      motion_primitive_double[0] = motion_primitive[0];
-      motion_primitive_double[1] = motion_primitive[1];
-      motion_primitives[i] = motion_primitive_double;
-      delete[] motion_primitive;
-    }
-    return motion_primitives;
   }
 
   double **create_trajectory(double state[3], double velocity,
@@ -114,53 +109,105 @@ private:
     return trajectory;
   }
 
+private:
+  double max_speed;
+  double max_steering;
+  double car_length;
+  double car_width;
+  int num_samples;
+  double dt;
+  double duration;
+  int num_trajectory_points;
+  double run_freq;
+  double kspeed = 1;
+  double kdistance = 1;
+  double kstability = 0.1;
+  double kdirection = 1;
+  double prev_v = 0;
+  double prev_s = 0;
+  int seed = 0;
+  std::map<int, double[2]> obs_history;
+
+  double **generate_motion_primitives() {
+    double **motion_primitives = new double *[num_samples];
+    for (int i = 0; i < num_samples; i++) {
+      float *motion_primitive = new float[2];
+      i4_sobol(2, &seed, motion_primitive);
+      double *motion_primitive_double = new double[2];
+      motion_primitive_double[0] = motion_primitive[0];
+      motion_primitive_double[1] = motion_primitive[1];
+      motion_primitives[i] = motion_primitive_double;
+      delete[] motion_primitive;
+    }
+    return motion_primitives;
+  }
+
   bool check_collision(double state[3], double **trajectory, double *obstacles,
-                       int obstacles_size) {
+                       double *obs_speeds, int obstacles_size) {
     for (int i = 0; i < obstacles_size; i++) {
-      // if (distance(obstacles[i * 3], obstacles[i * 3 + 1], state[0],
-      // state[1]) >
-      //     obstacles[i * 3 + 2] * pow(2, 0.5) +
-      //         sqrt(pow(car_length, 2) + pow(car_width, 2)) +
-      //         max_speed * duration) {
-      //   continue;
-      // }
+      double obstacle[3] = {obstacles[i * 5], obstacles[i * 5 + 1],
+                            obstacles[i * 5 + 2]};
       for (int j = 0; j < num_trajectory_points; j++) {
-        double car_center[2] = {trajectory[j][0], trajectory[j][1]};
+        bool collision = false;
+        double moved_obstacle[3] = {
+            obstacle[0] + obs_speeds[i * 2] * dt * j,
+            obstacle[1] + obs_speeds[i * 2 + 1] * dt * j, obstacle[2]};
 
-        double obstacle_size = obstacles[i * 3 + 2] +
-                               std::max(car_length, car_width) +
-                               0.1; // error margin
-
-        double obstacle_upper_l[2] = {obstacles[i * 3] - obstacle_size,
-                                      obstacles[i * 3 + 1] + obstacle_size};
-        double obstacle_upper_r[2] = {obstacles[i * 3] + obstacle_size,
-                                      obstacles[i * 3 + 1] + obstacle_size};
-        double obstacle_lower_l[2] = {obstacles[i * 3] - obstacle_size,
-                                      obstacles[i * 3 + 1] - obstacle_size};
-        double obstacle_lower_r[2] = {obstacles[i * 3] + obstacle_size,
-                                      obstacles[i * 3 + 1] - obstacle_size};
-
-        double triangle1[3][2] = {{obstacle_upper_l[0], obstacle_upper_l[1]},
-                                  {obstacle_upper_r[0], obstacle_upper_r[1]},
-                                  {obstacle_lower_l[0], obstacle_lower_l[1]}};
-
-        double triangle2[3][2] = {{obstacle_upper_r[0], obstacle_upper_r[1]},
-                                  {obstacle_lower_r[0], obstacle_lower_r[1]},
-                                  {obstacle_lower_l[0], obstacle_lower_l[1]}};
-
-        if (point_in_triangle(car_center, triangle1) ||
-            point_in_triangle(car_center, triangle2)) {
+        switch ((int)obstacles[i * 5 + 3]) {
+        case CIRCLE:
+          collision = check_circle_collision(trajectory[j], moved_obstacle);
+          break;
+        case RECTANGLE:
+          collision = check_rectangle_collision(trajectory[j], obstacle);
+          break;
+        }
+        if (collision) {
           return true;
         }
       }
     }
     return false;
   }
+  bool check_circle_collision(double loc[3], double obstacle[3]) {
+    double distance =
+        sqrt(pow(loc[0] - obstacle[0], 2) + pow(loc[1] - obstacle[1], 2));
+    return distance < obstacle[2] +
+                          sqrt(pow(car_length, 2) + pow(car_width, 2)) +
+                          0.02; // with error margin
+  }
+  bool check_rectangle_collision(double loc[3], double obstacle[3]) {
+    double car_center[2] = {loc[0], loc[1]};
+
+    double obstacle_size =
+        obstacle[2] + std::max(car_length, car_width) + 0.05; // error margin
+
+    double obstacle_upper_l[2] = {obstacle[0] - obstacle_size,
+                                  obstacle[1] + obstacle_size};
+    double obstacle_upper_r[2] = {obstacle[0] + obstacle_size,
+                                  obstacle[1] + obstacle_size};
+    double obstacle_lower_l[2] = {obstacle[0] - obstacle_size,
+                                  obstacle[1] - obstacle_size};
+    double obstacle_lower_r[2] = {obstacle[0] + obstacle_size,
+                                  obstacle[1] - obstacle_size};
+
+    double triangle1[3][2] = {{obstacle_upper_l[0], obstacle_upper_l[1]},
+                              {obstacle_upper_r[0], obstacle_upper_r[1]},
+                              {obstacle_lower_l[0], obstacle_lower_l[1]}};
+
+    double triangle2[3][2] = {{obstacle_upper_r[0], obstacle_upper_r[1]},
+                              {obstacle_lower_r[0], obstacle_lower_r[1]},
+                              {obstacle_lower_l[0], obstacle_lower_l[1]}};
+
+    return point_in_triangle(car_center, triangle1) ||
+           point_in_triangle(car_center, triangle2);
+  }
 
   double evaluate_score(double v, double s, double goal[2], double state[3],
-                        double *obstacles, int obstacles_size) {
+                        double *obstacles, double *obs_speeds,
+                        int obstacles_size) {
     double **trajectory = create_trajectory(state, v, s);
-    if (check_collision(state, trajectory, obstacles, obstacles_size)) {
+    if (check_collision(state, trajectory, obstacles, obs_speeds,
+                        obstacles_size)) {
       return -INFINITY;
     }
 
@@ -168,6 +215,7 @@ private:
     double distance_score =
         evaluate_distance_score(goal, trajectory[num_trajectory_points - 1]);
     double stability_score = evaluate_stability_score(v, s);
+    double direction_score = evaluate_direction_score(goal, trajectory[num_trajectory_points - 1]);
 
     // clear trajectory
     for (int i = 1; i < num_trajectory_points; i++) {
@@ -175,7 +223,7 @@ private:
     }
     delete[] trajectory;
 
-    return speed_score + distance_score + stability_score;
+    return speed_score + distance_score + stability_score + direction_score;
   }
 
   double evaluate_speed_score(double v) { return kspeed * v; }
@@ -186,14 +234,25 @@ private:
   double evaluate_stability_score(double v, double s) {
     return -kstability * (std::abs(s - prev_s));
   }
+
+  double evaluate_direction_score(double goal[2], double car_position[3]) {
+		double goal_angle = atan2(goal[1] - car_position[1], goal[0] - car_position[0]);
+		double car_angle = car_position[2];
+		double angle_diff = std::abs(goal_angle - car_angle);
+		if (angle_diff > M_PI) {
+			angle_diff = 2 * M_PI - angle_diff;
+		}
+		return -kdirection * angle_diff;
+	}
 };
 
 extern "C" DynamicWindowApproach *DWA_new(double max_speed, double max_steering,
                                           double car_length, double car_width,
                                           int num_samples, double dt,
-                                          double duration) {
+                                          double duration, double run_freq) {
   return new DynamicWindowApproach(max_speed, max_steering, car_length,
-                                   car_width, num_samples, dt, duration);
+                                   car_width, num_samples, dt, duration,
+                                   run_freq);
 }
 extern "C" double *DWA_get_controls(DynamicWindowApproach *dwa, double goal[2],
                                     double state[3], double *obstacles,
@@ -201,8 +260,14 @@ extern "C" double *DWA_get_controls(DynamicWindowApproach *dwa, double goal[2],
   return dwa->get_controls(goal, state, obstacles, obstacles_size);
 }
 
+extern "C" double **DWA_create_trajectory(DynamicWindowApproach *dwa,
+                                          double state[3], double velocity,
+                                          double steering) {
+  return dwa->create_trajectory(state, velocity, steering);
+}
+
 int main() {
-  DynamicWindowApproach *dwa = DWA_new(3, 10, 0.16, 0.12, 64, 0.01, 1);
+  DynamicWindowApproach *dwa = DWA_new(3, 10, 0.16, 0.12, 64, 0.01, 1, 0.02);
   double goal[2] = {10, 10};
   double state[3] = {0, 0, 0};
   double *obstacles = new double[6];
