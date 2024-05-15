@@ -166,7 +166,7 @@ def execute_scenario(scene, ASSETS=dict()):
     ]
     unused = np.zeros(1, dtype=np.int32)
 
-    update_freq = 10
+    update_freq = 15
 
     with mujoco.viewer.launch_passive(m, d, key_callback=key_callback) as viewer:
 
@@ -176,7 +176,7 @@ def execute_scenario(scene, ASSETS=dict()):
         # Close the viewer automatically after 30 wall-seconds.
         start = time.time()
         dynamic_window = DynamicWindowApproach(
-            3.0, 10.0, 0.16, 0.12, 64, 0.1, 1, update_freq * m.opt.timestep
+            2.5, 10.0, 0.16, 0.12, 128, 0.1, 1, update_freq * m.opt.timestep
         )
 
         static_obs = np.array([])
@@ -195,7 +195,10 @@ def execute_scenario(scene, ASSETS=dict()):
             )
 
         astar = AStarPlanner(
-            [p[0] for p in static_obs], [p[1] for p in static_obs], 0.5, 2**0.5
+            [p[0] for p in static_obs],
+            [p[1] for p in static_obs],
+            0.5,
+            2**0.5 + (0.16**2 + 0.12**2) ** 0.5, # obj size + car size
         )
         path_x, path_y = astar.planning(start_coor[0], start_coor[1], goal[0], goal[1])
         path = np.vstack((path_x, path_y)).T
@@ -212,7 +215,7 @@ def execute_scenario(scene, ASSETS=dict()):
 
         counter = 0
 
-        while viewer.is_running() and time.time() - start < 300:
+        while viewer.is_running() and time.time() - start < 3000:
             step_start = time.time()
 
             if not paused:
@@ -241,7 +244,7 @@ def execute_scenario(scene, ASSETS=dict()):
 
                     car_pos = np.array(d.xpos[1].copy()[0:2])
                     close_static_obs = static_obs[
-                        filter_coordinates(static_obs[:, :2], 3, car_pos)
+                        filter_coordinates(static_obs[:, :2], 2.5, car_pos)
                     ]
 
                     dynamic_obstacles = [
@@ -251,7 +254,7 @@ def execute_scenario(scene, ASSETS=dict()):
                     dynamic_obstacles = np.array(dynamic_obstacles)
 
                     close_dynamic_obs = dynamic_obstacles[
-                        filter_coordinates(dynamic_obstacles[:, :2], 3, car_pos)
+                        filter_coordinates(dynamic_obstacles[:, :2], 2.5, car_pos)
                     ]
                     close_obs = np.vstack((close_static_obs, close_dynamic_obs))
 
@@ -264,15 +267,17 @@ def execute_scenario(scene, ASSETS=dict()):
                     s = control[1]
 
                     traj = dynamic_window.create_trajectory(car_state, v, s)
-                    traj = [[traj[i][0], traj[i][1]] for i in range(1,10)]
+                    traj = [[traj[i][0], traj[i][1]] for i in range(1, 10)]
                     traj = np.array(traj)
-                    visualizer.visualize_path(traj, viewer, geom_id, color=[0, 0, 1, 1], height=0.05)
+                    visualizer.visualize_path(
+                        traj, viewer, geom_id, color=[0, 0, 1, 1], height=0.05
+                    )
                     old_geom_id = geom_id
 
                     velocity.ctrl = v
                     steering.ctrl = s
 
-                counter += 1
+                counter = (counter + 1) % update_freq
 
                 # mj_step can be replaced with code that also evaluates
                 # a policy and applies a control signal before stepping the physics.

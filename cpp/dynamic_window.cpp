@@ -32,7 +32,7 @@ public:
                         double car_length, double car_width, int num_samples,
                         double dt, double duration, double run_freq,
                         double kspeed = 1, double kdistance = 1,
-                        double kstability = 0.2, double kdirection = 0.7) {
+                        double kstability = 0.2, double kdirection = 1) {
     this->max_speed = max_speed;
     this->max_steering = max_steering;
     this->car_length = car_length;
@@ -69,7 +69,7 @@ public:
     double best_score = -INFINITY;
     double **motion_primitives = generate_motion_primitives();
     for (int i = 0; i < num_samples; i++) {
-      double v = (motion_primitives[i][0] - 0.5) * max_speed * 2;
+      double v = motion_primitives[i][0] * max_speed;
       double s = (motion_primitives[i][1] - 0.5) * max_steering * 2;
 
       double score = evaluate_score(v, s, goal, state, obstacles, obs_speeds,
@@ -173,13 +173,14 @@ private:
         sqrt(pow(loc[0] - obstacle[0], 2) + pow(loc[1] - obstacle[1], 2));
     return distance < obstacle[2] +
                           sqrt(pow(car_length, 2) + pow(car_width, 2)) +
-                          0.02; // with error margin
+                          0.03; // with error margin
   }
   bool check_rectangle_collision(double loc[3], double obstacle[3]) {
     double car_center[2] = {loc[0], loc[1]};
 
-    double obstacle_size =
-        obstacle[2] + std::max(car_length, car_width) + 0.05; // error margin
+    double obstacle_size = obstacle[2] +
+                           sqrt(pow(car_length, 2) + pow(car_width, 2)) +
+                           0.1; // error margin
 
     double obstacle_upper_l[2] = {obstacle[0] - obstacle_size,
                                   obstacle[1] + obstacle_size};
@@ -212,10 +213,12 @@ private:
     }
 
     double speed_score = evaluate_speed_score(v);
+
     double distance_score =
         evaluate_distance_score(goal, trajectory[num_trajectory_points - 1]);
     double stability_score = evaluate_stability_score(v, s);
-    double direction_score = evaluate_direction_score(goal, trajectory[num_trajectory_points - 1]);
+    double direction_score =
+        evaluate_direction_score(goal, trajectory[num_trajectory_points - 1]);
 
     // clear trajectory
     for (int i = 1; i < num_trajectory_points; i++) {
@@ -227,6 +230,7 @@ private:
   }
 
   double evaluate_speed_score(double v) { return kspeed * v; }
+
   double evaluate_distance_score(double goal[2], double car_position[2]) {
     return -kdistance *
            distance(goal[0], goal[1], car_position[0], car_position[1]);
@@ -236,14 +240,15 @@ private:
   }
 
   double evaluate_direction_score(double goal[2], double car_position[3]) {
-		double goal_angle = atan2(goal[1] - car_position[1], goal[0] - car_position[0]);
-		double car_angle = car_position[2];
-		double angle_diff = std::abs(goal_angle - car_angle);
-		if (angle_diff > M_PI) {
-			angle_diff = 2 * M_PI - angle_diff;
-		}
-		return -kdirection * angle_diff;
-	}
+    double goal_angle =
+        atan2(goal[1] - car_position[1], goal[0] - car_position[0]);
+    double car_angle = car_position[2];
+    double angle_diff = std::abs(goal_angle - car_angle);
+    if (angle_diff > M_PI) {
+      angle_diff = 2 * M_PI - angle_diff;
+    }
+    return -kdirection * angle_diff;
+  }
 };
 
 extern "C" DynamicWindowApproach *DWA_new(double max_speed, double max_steering,
