@@ -229,7 +229,7 @@ private:
     return speed_score + distance_score + stability_score + direction_score;
   }
 
-  double evaluate_speed_score(double v) { return kspeed * v; }
+  double evaluate_speed_score(double v) { return kspeed * pow(v, 2); }
 
   double evaluate_distance_score(double goal[2], double car_position[2]) {
     return -kdistance *

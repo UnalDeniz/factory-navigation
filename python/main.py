@@ -166,7 +166,7 @@ def execute_scenario(scene, ASSETS=dict()):
     ]
     unused = np.zeros(1, dtype=np.int32)
 
-    update_freq = 15
+    update_freq = 10
 
     with mujoco.viewer.launch_passive(m, d, key_callback=key_callback) as viewer:
 
@@ -176,7 +176,7 @@ def execute_scenario(scene, ASSETS=dict()):
         # Close the viewer automatically after 30 wall-seconds.
         start = time.time()
         dynamic_window = DynamicWindowApproach(
-            2.5, 10.0, 0.16, 0.12, 128, 0.1, 1, update_freq * m.opt.timestep
+            2, 10.0, 0.16, 0.12, 128, 0.1, 1, update_freq * m.opt.timestep
         )
 
         static_obs = np.array([])
@@ -244,7 +244,7 @@ def execute_scenario(scene, ASSETS=dict()):
 
                     car_pos = np.array(d.xpos[1].copy()[0:2])
                     close_static_obs = static_obs[
-                        filter_coordinates(static_obs[:, :2], 2.5, car_pos)
+                        filter_coordinates(static_obs[:, :2], 2, car_pos)
                     ]
 
                     dynamic_obstacles = [
@@ -254,7 +254,7 @@ def execute_scenario(scene, ASSETS=dict()):
                     dynamic_obstacles = np.array(dynamic_obstacles)
 
                     close_dynamic_obs = dynamic_obstacles[
-                        filter_coordinates(dynamic_obstacles[:, :2], 2.5, car_pos)
+                        filter_coordinates(dynamic_obstacles[:, :2], 2, car_pos)
                     ]
                     close_obs = np.vstack((close_static_obs, close_dynamic_obs))
 
