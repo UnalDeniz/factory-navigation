@@ -1,0 +1,73 @@
+* Implemenation Details
+** Path Planning
+I used AStar planning algorithm to calculate the path. I
+used 0.5 as the resolution to make sure the algorithm executes fast
+enough without losing too much on accuracy. I removed %80 of the
+path points before giving the path to the path following
+algorithm. The reasoning for this to prevent the sharp turns at the
+start of the execution, since the car may not face the optimal
+direction at the start. This does not completely eliminate the U-turn
+the car has to do if the path is completely in the opposite direction,
+however it smooths the initial turns in some cases.
+
+** Path Tracking
+I used Dynamic Window Approach for path tracking. I used a Sobol
+Sequence Generator to sample the dynamic window. I only used objects
+that are close to the robot while calculating the collisions to
+improve the performance. After calculating the collisions, I give
+negative infinity as a score to the trajectories with collisions. As
+for the rest I scored them based on 4 criteria:
+- Distance to Goal
+- Velocity
+- Stability
+- Direction
+
+*** Distance Score
+I keep track of the path points I calculated in the path planning part
+and gave the first point to the DWA algorithm as the goal. Whenever
+the car gets closer to the goal point I take the next point from the
+point array and use it as the new goal to the algorithm until the
+final goal has been reached. The algorithm uses the goal that is given
+to it and calculates the score as the negative of the distance between
+goal and the car times the coefficient for the distance score. This is
+the most important score and makes sure that we are getting closer to
+the goal.
+
+*** Velocity Score
+I get the velocity of the car directly from the simulation and use it
+to calculate the score as the square of the velocity times the
+coefficient for the velocity score. This score makes sure that the car
+keeps going even if it is directed towards the wrong direction and
+needs to do U-turn to follow the path.
+
+*** Stability Score
+I keep track of the steering value the algorithm selected from the
+previous call, and calculate the difference between the current
+steering corresponding to the trajectory. The score is calculated as
+the negative of the steering difference times the coefficient for the
+stability score. This score is designed to prevent having too much
+oscillations in steering value and providing a smoother driving
+ecperience.
+
+*** Direction Score
+I calculate the angle of the direct path between the car and the goal
+without taking the obstacles into account, and find the difference
+between that and the angle the car will have at the end of the
+trajectory. The score is calculated as negative of angle difference
+times the coefficient for the direction score. This score is helping
+adjusting the direction of the car to the direction of the path.
+
+
+After all scores are calculated they will be summed up and the best
+trajectory with the biggest score will be selected. The control
+parameters corresponding to that trajectory will be given to the
+simulation.
+
+** Improving The Performance
+Since there are lots of collision checking and score calculations, it
+can be heavy on the cpu and slow down the simulation. To prevent that
+I made some optimizations. I used only the obstacles that is closer
+than 2 units in DWA calculations. I also run the algorithm only once
+in 10 timesteps. In addition to those I implemented the DWA in C++ to
+make sure that the inherent slowness of an interpreted language
+(python) does not slow down the application.
